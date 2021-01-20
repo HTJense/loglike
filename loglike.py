@@ -15,14 +15,11 @@ class Likelihood:
 		self.b_ell = None
 		self.ells = None
 		
-		# Total number of bins + number of bins per cross spectrum
-		self.nbintt = 52
-		self.nbinte = 52
-		self.nbinee = 52
+		# Total number of bins per cross spectrum
+		self.nbintt = []
+		self.nbinte = []
+		self.nbinee = []
 		
-		self.nspectt = 3
-		self.nspecte = 4
-		self.nspecee = 3
 		self.freqs = [ 95, 150 ]
 		
 		# maximum ell for windows and for cross spectra
@@ -49,7 +46,26 @@ class Likelihood:
 		self.enable_te = True
 		self.enable_ee = True
 	
+	def set_bins(self, bintt, binte, binee, nfreq = 1):
+		if type(bintt) == list:
+			self.nbintt = bintt
+		else:
+			self.nbintt = [ int(bintt) for _ in range(nfreq * (nfreq + 1) // 2) ]
+		
+		if type(binee) == list:
+			self.nbinee = binee
+		else:
+			self.nbinee = [ int(binee) for _ in range(nfreq * (nfreq + 1) // 2) ]
+		
+		if type(binte) == list:
+			self.nbinte = binte
+		else:
+			self.nbinte = [ int(binte) for _ in range(nfreq * nfreq) ]
+	
 	def load_plaintext(self, spec_filename, cov_filename, bbl_filename, data_dir = ''):
+		if self.nbin == 0:
+			raise ValueError('You did not set any spectra bin sizes beforehand!')
+		
 		self.win_func = np.loadtxt(data_dir + bbl_filename)[:self.nbin,:self.lmax_win]
 		self.b_dat = np.loadtxt(data_dir + spec_filename)[:self.nbin]
 		
@@ -70,31 +86,37 @@ class Likelihood:
 		saccfile = sacc.Sacc.load_fits(data_dir + sacc_filename)
 		
 		# Find how many TT+TE+EE spectra are given in this file.
-		self.nspectt = len(saccfile.get_tracer_combinations('cl_00'))
-		self.nspecte = len(saccfile.get_tracer_combinations('cl_0e'))
-		self.nspecee = len(saccfile.get_tracer_combinations('cl_ee'))
+		#self.nspectt = len(saccfile.get_tracer_combinations('cl_00'))
+		#self.nspecte = len(saccfile.get_tracer_combinations('cl_0e'))
+		#self.nspecee = len(saccfile.get_tracer_combinations('cl_ee'))
 		
 		# Check if the numbers add up, we expect N(N+1)/2 for TT/EE and N^2 for TE.
-		n = int(np.sqrt(self.nspecte))
+		n = int(np.sqrt(len(saccfile.get_tracer_combinations('cl_0e'))))
 		ntt = int(n * (n + 1) / 2)
 		nte = int(n * n)
-		
-		if self.nspectt != ntt or self.nspecte != nte or self.nspecee != ntt:
-			raise ValueError('Incorrect number of spectra found: expected {}+{}+{} but found {}+{}+{} (TT+TE+EE).'.format(ntt, nte, ntt, self.nspectt, self.nspecte, self.nspecee))
 		
 		# List all used frequencies.
 		# casting a list to a set back to a list to filter out only unique values.
 		self.freqs = sorted(list(set([ int(re.search('{}_([0-9]+)_'.format(xp_name), x).groups()[0]) for x,_ in saccfile.get_tracer_combinations('cl_00') ])))
 		
+		self.nbintt = []
+		self.nbinee = []
+		self.nbinte = []
+		
 		# We check how large our window function + covmat should be
-		_, tmp_cells = saccfile.get_ell_cl('cl_00', *saccfile.get_tracer_combinations('cl_00')[0], return_cov = False)
-		self.nbintt = tmp_cells.shape[0]
+		for i in range(ntt):
+			_, tmp_cells = saccfile.get_ell_cl('cl_00', *saccfile.get_tracer_combinations('cl_00')[i], return_cov = False)
+			self.nbintt.append(tmp_cells.shape[0])
+			
+			_, tmp_cells = saccfile.get_ell_cl('cl_ee', *saccfile.get_tracer_combinations('cl_ee')[i], return_cov = False)
+			self.nbinee.append(tmp_cells.shape[0])
 		
-		_, tmp_cells = saccfile.get_ell_cl('cl_0e', *saccfile.get_tracer_combinations('cl_0e')[0], return_cov = False)
-		self.nbinte = tmp_cells.shape[0]
+		for j in range(nte):
+			_, tmp_cells = saccfile.get_ell_cl('cl_0e', *saccfile.get_tracer_combinations('cl_0e')[j], return_cov = False)
+			self.nbinte.append(tmp_cells.shape[0])
 		
-		_, tmp_cells = saccfile.get_ell_cl('cl_ee', *saccfile.get_tracer_combinations('cl_ee')[0], return_cov = False)
-		self.nbinee = tmp_cells.shape[0]
+		if self.nspectt != ntt or self.nspecte != nte or self.nspecee != ntt:
+			raise ValueError('Incorrect number of spectra found: expected {}+{}+{} but found {}+{}+{} (TT+TE+EE).'.format(ntt, nte, ntt, self.nspectt, self.nspecte, self.nspecee))
 		
 		indices = saccfile.indices('cl_00', saccfile.get_tracer_combinations('cl_00')[0])
 		win_func = saccfile.get_bandpower_windows(indices)
@@ -118,25 +140,25 @@ class Likelihood:
 				eltt, cltt, covtt, ind_tt = saccfile.get_ell_cl('cl_00', '{}_{}_s0'.format(xp_name, f1), '{}_{}_s0'.format(xp_name, f2), return_cov = True, return_ind = True)
 				win_tt = saccfile.get_bandpower_windows(ind_tt)
 				
-				n0 = j * self.nbintt
-				self.b_dat[n0:n0+self.nbintt] = cltt
-				self.b_ell[n0:n0+self.nbintt] = eltt
-				self.covmat[n0:n0+self.nbintt,n0:n0+self.nbintt] = covtt[:,:]
-				self.win_func[n0:n0+self.nbintt,:] = win_tt.weight[:,:].T
+				n0 = sum(self.nbintt[0:j])
+				self.b_dat[n0:n0+self.nbintt[j]] = cltt
+				self.b_ell[n0:n0+self.nbintt[j]] = eltt
+				self.covmat[n0:n0+self.nbintt[j],n0:n0+self.nbintt[j]] = covtt[:,:]
+				self.win_func[n0:n0+self.nbintt[j],:] = win_tt.weight[:,:].T
 				
 				elee, clee, covee, ind_ee = saccfile.get_ell_cl('cl_ee', '{}_{}_s2'.format(xp_name, f1), '{}_{}_s2'.format(xp_name, f2), return_cov = True, return_ind = True)
 				win_ee = saccfile.get_bandpower_windows(ind_ee)
 				
-				n0 = self.nspectt * self.nbintt + self.nspecte * self.nbinte + j * self.nbinee
-				self.b_dat[n0:n0+self.nbinee] = clee
-				self.b_ell[n0:n0+self.nbinee] = elee
-				self.covmat[n0:n0+self.nbinee,n0:n0+self.nbinee] = covee[:,:]
-				self.win_func[n0:n0+self.nbinee,:] = win_ee.weight[:,:].T
+				n0 = sum(self.nbintt) + sum(self.nbinte) + sum(self.nbinee[0:j])
+				self.b_dat[n0:n0+self.nbinee[j]] = clee
+				self.b_ell[n0:n0+self.nbinee[j]] = elee
+				self.covmat[n0:n0+self.nbinee[j],n0:n0+self.nbinee[j]] = covee[:,:]
+				self.win_func[n0:n0+self.nbinee[j],:] = win_ee.weight[:,:].T
 				
 				j += 1
 			
 			# TE can be done in all cases, because F1xF2 != F2xF1
-			n0 = self.nspectt * self.nbintt + i * self.nbinte
+			n0 = sum(self.nbintt) + sum(self.nbinte[0:i])
 			elte, clte, covte, ind_te = saccfile.get_ell_cl('cl_0e', '{}_{}_s0'.format(xp_name, f1), '{}_{}_s2'.format(xp_name, f2), return_cov = True, return_ind = True)
 			
 			if covte.shape == (0,0):
@@ -144,10 +166,10 @@ class Likelihood:
 				elte, clte, covte, ind_te = saccfile.get_ell_cl('cl_0e', '{}_{}_s2'.format(xp_name, f2), '{}_{}_s0'.format(xp_name, f1), return_cov = True, return_ind = True)
 			
 			win_te = saccfile.get_bandpower_windows(ind_te)
-			self.b_dat[n0:n0+self.nbinte] = clte
-			self.b_ell[n0:n0+self.nbinte] = elte
-			self.covmat[n0:n0+self.nbinte,n0:n0+self.nbinte] = covte[:,:]
-			self.win_func[n0:n0+self.nbinte,:] = win_te.weight[:,:].T
+			self.b_dat[n0:n0+self.nbinte[i]] = clte
+			self.b_ell[n0:n0+self.nbinte[i]] = elte
+			self.covmat[n0:n0+self.nbinte[i],n0:n0+self.nbinte[i]] = covte[:,:]
+			self.win_func[n0:n0+self.nbinte[i],:] = win_te.weight[:,:].T
 		
 		self.cull_covmat()
 	
@@ -198,23 +220,23 @@ class Likelihood:
 		for i in range(self.b0):
 			for j in range(self.nspectt):
 				# cull lmin in TT
-				self.covmat[i+j*self.nbintt,:self.nbin] = 0.0
-				self.covmat[:self.nbin,i+j*self.nbintt] = 0.0
-				self.covmat[i+j*self.nbintt,i+j*self.nbintt] = 1e10
+				self.covmat[i+sum(self.nbintt[0:j]),:self.nbin] = 0.0
+				self.covmat[:self.nbin,i+sum(self.nbintt[0:j])] = 0.0
+				self.covmat[i+sum(self.nbintt[0:j]),i+sum(self.nbintt[0:j])] = 1e10
 		
-		for i in range(self.nspectt * self.nbintt, self.nspectt * self.nbintt + self.b1):
+		for i in range(sum(self.nbintt), sum(self.nbintt) + self.b1):
 			for j in range(self.nspecte):
 				# cull lmin in TE
-				self.covmat[i+j*self.nbinte,:self.nbin] = 0.0
-				self.covmat[:self.nbin,i+j*self.nbinte] = 0.0
-				self.covmat[i+j*self.nbinte,i+j*self.nbinte] = 1e10
+				self.covmat[i+sum(self.nbinte[0:j]),:self.nbin] = 0.0
+				self.covmat[:self.nbin,i+sum(self.nbinte[0:j])] = 0.0
+				self.covmat[i+sum(self.nbinte[0:j]),i+sum(self.nbinte[0:j])] = 1e10
 		
-		for i in range(self.nspectt * self.nbintt + self.nspecte * self.nbinte, self.nspectt * self.nbintt + self.nspecte * self.nbinte + self.b2):
+		for i in range(sum(self.nbintt) + sum(self.nbinte), sum(self.nbintt) + sum(self.nbinte) + self.b2):
 			for j in range(self.nspecee):
 				# cull lmin in EE
-				self.covmat[i+j*self.nbinee,:self.nbin] = 0.0
-				self.covmat[:self.nbin,i+j*self.nbinee] = 0.0
-				self.covmat[i+j*self.nbinee,i+j*self.nbinee] = 1e10
+				self.covmat[i+sum(self.nbinee[0:j]),:self.nbin] = 0.0
+				self.covmat[:self.nbin,i+sum(self.nbinee[0:j])] = 0.0
+				self.covmat[i+sum(self.nbinee[0:j]),i+sum(self.nbinee[0:j])] = 1e10
 	
 	def loglike(self, fg_tt = None, fg_te = None, fg_ee = None, yp1 = 1.0, yp2 = 1.0):
 		if fg_tt is None and self.enable_tt:
@@ -249,67 +271,81 @@ class Likelihood:
 		
 		# TT modes
 		for j in range(self.nspectt):
-			x_model[j * self.nbintt : (j+1) * self.nbintt] = self.win_func[j * self.nbintt : (j+1) * self.nbintt, :] @ x_theory[j,:] # TT
+			x_model[sum(self.nbintt[0:j]) : sum(self.nbintt[0:j+1])] = self.win_func[sum(self.nbintt[0:j]) : sum(self.nbintt[0:j+1]), :] @ x_theory[j,:] # TT
 		
 		# TE modes
 		for j in range(self.nspecte):
-			i0 = self.nspectt * self.nbintt
+			i0 = sum(self.nbintt)
 			j0 = self.nspectt
-			x_model[i0 + j * self.nbinte : i0 + (j+1) * self.nbinte] = self.win_func[i0 + j * self.nbinte : i0 + (j+1) * self.nbinte, :] @ x_theory[j0+j,:] # TE
+			x_model[i0 + sum(self.nbinte[0:j]) : i0 + sum(self.nbinte[0:j+1])] = self.win_func[i0 + sum(self.nbinte[0:j]) : i0 + sum(self.nbinte[0:j+1]), :] @ x_theory[j0+j,:] # TE
 		
 		# EE modes
 		for j in range(self.nspecee):
-			i0 = self.nspectt * self.nbintt + self.nspecte * self.nbinte
+			i0 = sum(self.nbintt) + sum(self.nbinte)
 			j0 = self.nspectt + self.nspecte
-			x_model[i0 + j * self.nbinee : i0 + (j+1) * self.nbinee] = self.win_func[i0 + j * self.nbinee : i0 + (j+1) * self.nbinee, :] @ x_theory[j0+j,:] # EE
+			x_model[i0 + sum(self.nbinee[0:j]) : i0 + sum(self.nbinee[0:j+1])] = self.win_func[i0 + sum(self.nbinee[0:j]) : i0 + sum(self.nbinee[0:j+1]), :] @ x_theory[j0+j,:] # EE
 		
 		# Leakage
 		if not self.l98 is None and not self.l150 is None:
-			i0 = 3 * self.nbintt
-			x_model[i0                   : i0 +     self.nbinte] += x_model[                :     self.nbintt] * self.a1 *  self.l98
-			x_model[i0 +     self.nbinte : i0 + 2 * self.nbinte] += x_model[    self.nbintt : 2 * self.nbintt] * self.a2 * self.l150
-			x_model[i0 + 2 * self.nbinte : i0 + 3 * self.nbinte] += x_model[    self.nbintt : 2 * self.nbintt] * self.a1 *  self.l98
-			x_model[i0 + 3 * self.nbinte : i0 + 4 * self.nbinte] += x_model[2 * self.nbintt : 3 * self.nbintt] * self.a2 * self.l150
+			# TODO: Leakage for nfreq > 2.
+			# Currently it is hardcoded and only allows for 2 freq leakage, but it should be changed to allow for n > 2.
 			
-			i0 = 3 * self.nbintt + 4 * self.nbinte
-			x_model[i0                   : i0 +     self.nbinee] += 2 * x_model[3 * self.nbintt                   : 3 * self.nbintt +     self.nbinte] * self.a1 * self.l98 + x_model[:self.nbintt] * np.power(self.a1 * self.l98, 2.0)
-			x_model[i0 +     self.nbinee : i0 + 2 * self.nbinee] +=     x_model[3 * self.nbintt +     self.nbinte : 3 * self.nbintt + 2 * self.nbinte] * self.a1 * self.l98 + x_model[3 * self.nbintt + 2 * self.nbinte : 3 * self.nbintt + 3 * self.nbinte] * self.a2 * self.l150 + x_model[self.nbintt : 2 * self.nbintt] * self.a1 * self.l98 * self.a2 * self.l150
-			x_model[i0 + 2 * self.nbinee : i0 + 3 * self.nbinee] += 2 * x_model[3 * self.nbintt + 3 * self.nbinte : 3 * self.nbintt + 4 * self.nbinte] * self.a2 * self.l150 + x_model[2 * self.nbintt : 3 * self.nbintt] * np.power(self.a2 * self.l150, 2.0)
+			# Modify TE spectra by adding scaled TT components.
+			i0 = sum(self.nbintt)
+			x_model[i0 + sum(self.nbinte[0:0]) : i0 + sum(self.nbinte[0:1]) ] += x_model[ sum(self.nbintt[0:0]) : sum(self.nbintt[0:1]) ] * self.a1 * self.l98
+			x_model[i0 + sum(self.nbinte[0:1]) : i0 + sum(self.nbinte[0:2]) ] += x_model[ sum(self.nbintt[0:1]) : sum(self.nbintt[0:2]) ] * self.a2 * self.l150
+			x_model[i0 + sum(self.nbinte[0:2]) : i0 + sum(self.nbinte[0:3]) ] += x_model[ sum(self.nbintt[0:1]) : sum(self.nbintt[0:2]) ] * self.a1 * self.l98
+			x_model[i0 + sum(self.nbinte[0:3]) : i0 + sum(self.nbinte[0:4]) ] += x_model[ sum(self.nbintt[0:2]) : sum(self.nbintt[0:3]) ] * self.a2 * self.l150
+			
+			# Modify EE spectra by adding scaled TT/TE components.
+			j0 = sum(self.nbintt) + sum(self.nbinte)
+			x_model[j0 + sum(self.nbinee[0:0]) : j0 + sum(self.nbinee[0:1]) ] += 2 * x_model[ i0 + sum(self.nbinte[0:0]) : i0 + sum(self.nbinte[0:1]) ] * self.a1 * self.l98
+			x_model[j0 + sum(self.nbinee[0:0]) : j0 + sum(self.nbinee[0:1]) ] +=     x_model[      sum(self.nbintt[0:0]) :      sum(self.nbintt[0:1]) ] * self.a1 * self.l98 * self.a1 * self.l98
+			
+			x_model[j0 + sum(self.nbinee[0:1]) : j0 + sum(self.nbinee[0:2]) ] +=     x_model[ i0 + sum(self.nbinte[0:1]) : i0 + sum(self.nbinte[0:2]) ] * self.a1 * self.l98
+			x_model[j0 + sum(self.nbinee[0:1]) : j0 + sum(self.nbinee[0:2]) ] +=     x_model[ i0 + sum(self.nbinte[0:2]) : i0 + sum(self.nbinte[0:3]) ] * self.a2 * self.l150
+			x_model[j0 + sum(self.nbinee[0:1]) : j0 + sum(self.nbinee[0:2]) ] +=     x_model[      sum(self.nbintt[0:1]) :      sum(self.nbintt[0:2]) ] * self.a1 * self.l98 * self.a2 * self.l150
+			
+			x_model[j0 + sum(self.nbinee[0:2]) : j0 + sum(self.nbinee[0:3]) ] += 2 * x_model[ i0 + sum(self.nbinte[0:3]) : i0 + sum(self.nbinte[0:4]) ] * self.a2 * self.l150
+			x_model[j0 + sum(self.nbinee[0:0]) : j0 + sum(self.nbinee[0:1]) ] +=     x_model[      sum(self.nbintt[0:2]) :      sum(self.nbintt[0:3]) ] * self.a2 * self.l150 * self.a2 * self.l150
 		
 		# Calibration
-		x_model[                :     self.nbintt] = x_model[                :     self.nbintt] * self.ct1 * self.ct1
-		x_model[    self.nbintt : 2 * self.nbintt] = x_model[    self.nbintt : 2 * self.nbintt] * self.ct1 * self.ct2
-		x_model[2 * self.nbintt : 3 * self.nbintt] = x_model[2 * self.nbintt : 3 * self.nbintt] * self.ct2 * self.ct2
+		# TODO: Calibration for nfreq > 2.
+		# I.e. have the user pass on a calibration matrix or something and index it.
+		# It suffers from the same problem as the leakage, meaning it is hardcoded and doesn't allow for more than 2 freq cross-spectra.
+		x_model[ sum(self.nbintt[0:0]) : sum(self.nbintt[0:1]) ] = x_model[ sum(self.nbintt[0:0]) : sum(self.nbintt[0:1]) ] * self.ct1 * self.ct1
+		x_model[ sum(self.nbintt[0:1]) : sum(self.nbintt[0:2]) ] = x_model[ sum(self.nbintt[0:1]) : sum(self.nbintt[0:2]) ] * self.ct1 * self.ct2
+		x_model[ sum(self.nbintt[0:2]) : sum(self.nbintt[0:3]) ] = x_model[ sum(self.nbintt[0:2]) : sum(self.nbintt[0:3]) ] * self.ct2 * self.ct2
 		
-		i0 = self.nspectt * self.nbintt
-		x_model[i0                   : i0 +     self.nbinte] = x_model[i0                   : i0 +     self.nbinte] * self.ct1 * self.ct1 * yp1
-		x_model[i0 +     self.nbinte : i0 + 2 * self.nbinte] = x_model[i0 +     self.nbinte : i0 + 2 * self.nbinte] * self.ct1 * self.ct2 * yp2
-		x_model[i0 + 2 * self.nbinte : i0 + 3 * self.nbinte] = x_model[i0 + 2 * self.nbinte : i0 + 3 * self.nbinte] * self.ct2 * self.ct1 * yp1
-		x_model[i0 + 3 * self.nbinte : i0 + 4 * self.nbinte] = x_model[i0 + 3 * self.nbinte : i0 + 4 * self.nbinte] * self.ct2 * self.ct2 * yp2
+		i0 = sum(self.nbintt)
+		x_model[ i0 + sum(self.nbinte[0:0]) : i0 + sum(self.nbinte[0:1]) ] = x_model[ i0 + sum(self.nbinte[0:0]) : i0 + sum(self.nbinte[0:1]) ] * self.ct1 * self.ct1 * yp1
+		x_model[ i0 + sum(self.nbinte[0:1]) : i0 + sum(self.nbinte[0:2]) ] = x_model[ i0 + sum(self.nbinte[0:1]) : i0 + sum(self.nbinte[0:2]) ] * self.ct1 * self.ct2 * yp2
+		x_model[ i0 + sum(self.nbinte[0:2]) : i0 + sum(self.nbinte[0:3]) ] = x_model[ i0 + sum(self.nbinte[0:2]) : i0 + sum(self.nbinte[0:3]) ] * self.ct2 * self.ct1 * yp1
+		x_model[ i0 + sum(self.nbinte[0:3]) : i0 + sum(self.nbinte[0:4]) ] = x_model[ i0 + sum(self.nbinte[0:3]) : i0 + sum(self.nbinte[0:4]) ] * self.ct2 * self.ct2 * yp2
 		
-		i0 = self.nspectt * self.nbintt + self.nspecte * self.nbinte
-		x_model[i0                   : i0 +     self.nbinee] = x_model[i0                   : i0 +     self.nbinee] * self.ct1 * self.ct1 * yp1 * yp1
-		x_model[i0 +     self.nbinee : i0 + 2 * self.nbinee] = x_model[i0 +     self.nbinee : i0 + 2 * self.nbinee] * self.ct1 * self.ct2 * yp1 * yp2
-		x_model[i0 + 2 * self.nbinee : i0 + 3 * self.nbinee] = x_model[i0 + 2 * self.nbinee : i0 + 3 * self.nbinee] * self.ct2 * self.ct2 * yp2 * yp2
+		i0 = sum(self.nbintt) + sum(self.nbinte)
+		x_model[ i0 + sum(self.nbinee[0:0]) : i0 + sum(self.nbinee[0:1]) ] = x_model[ i0 + sum(self.nbinee[0:0]) : i0 + sum(self.nbinee[0:1]) ] * self.ct1 * self.ct1 * yp1 * yp1
+		x_model[ i0 + sum(self.nbinee[0:1]) : i0 + sum(self.nbinee[0:2]) ] = x_model[ i0 + sum(self.nbinee[0:1]) : i0 + sum(self.nbinee[0:2]) ] * self.ct1 * self.ct2 * yp1 * yp2
+		x_model[ i0 + sum(self.nbinee[0:2]) : i0 + sum(self.nbinee[0:3]) ] = x_model[ i0 + sum(self.nbinee[0:2]) : i0 + sum(self.nbinee[0:3]) ] * self.ct2 * self.ct2 * yp2 * yp2
 		
 		subcov = self.covmat
 		bin_no = self.nbin
 		diff_vec = self.b_dat - x_model
 		
 		if self.enable_tt and not self.enable_te and not self.enable_ee:
-			bin_no = self.nbintt * self.nspectt
+			bin_no = sum(self.nbintt)
 			diff_vec = diff_vec[:bin_no]
 			subcov = self.covmat[:bin_no,:bin_no]
 			print('Using only TT.')
 		elif not self.enable_tt and self.enable_te and not self.enable_ee:
-			n0 = self.nbintt * self.nspectt
-			bin_no = self.nbinte * self.nspecte
+			n0 = sum(self.nbintt)
+			bin_no = sum(self.nbinte)
 			diff_vec = diff_vec[n0:n0 + bin_no]
 			subcov = self.covmat[n0:n0 + bin_no, n0:n0 + bin_no]
 			print('Using only TE.')
 		elif not self.enable_tt and not self.enable_te and self.enable_ee:
-			n0 = self.nbintt * self.nspectt + self.nbinte * self.nspecte
-			bin_no = self.nbinee * self.nspecee
+			n0 = sum(self.nbintt) + sum(self.nbinte)
+			bin_no = sum(self.nbinee)
 			diff_vec = diff_vec[n0:n0 + bin_no]
 			subcov = self.covmat[n0:n0 + bin_no, n0:n0 + bin_no]
 			print('Using only EE.')
@@ -360,9 +396,21 @@ class Likelihood:
 		return self.freqs
 	
 	@property
+	def nspectt(self):
+		return len(self.nbintt)
+	
+	@property
+	def nspecte(self):
+		return len(self.nbinte)
+	
+	@property
+	def nspecee(self):
+		return len(self.nbinee)
+	
+	@property
 	def nbin(self):
 		# total number of bins
-		return self.nbintt * self.nspectt + self.nbinte * self.nspecte + self.nbinee * self.nspecee
+		return sum(self.nbintt) + sum(self.nbinte) + sum(self.nbinee)
 	
 	@property
 	def nspec(self):
