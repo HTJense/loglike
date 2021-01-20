@@ -207,9 +207,10 @@ class Likelihood:
 		self.ells = np.arange(2, self.input_shape+2)
 	
 	def load_leakage(self, leak_filename, data_dir = ''):
+		# Note: this assumes all TE bins are the same length (it is hardcoded at a later point).
 		_, self.l98, self.l150 = np.loadtxt(data_dir + leak_filename, unpack = True)
-		self.l98 = self.l98[:self.nbinte]
-		self.l150 = self.l150[:self.nbinte]
+		self.l98 = self.l98[ :self.nbinte[0] ]
+		self.l150 = self.l150[ :self.nbinte[0] ]
 		
 		self.a1 = 1.0
 		self.a2 = 1.0
