@@ -135,8 +135,6 @@ class Likelihood:
 			i1 = int(matcher.search(tt1).groups()[0])
 			i2 = int(matcher.search(tt2).groups()[0])
 			self.crosstt.append((self.freqs.index(i1), self.freqs.index(i2)))
-			
-			print('TT-bin index {0:d} is freqs {1:d}x{2:d}'.format(i, i1, i2))
 		
 		for i in range(len(saccfile.get_tracer_combinations('cl_ee'))):
 			ee1, ee2 = saccfile.get_tracer_combinations('cl_ee')[i]
@@ -146,8 +144,6 @@ class Likelihood:
 			i1 = int(matcher.search(ee1).groups()[0])
 			i2 = int(matcher.search(ee2).groups()[0])
 			self.crossee.append((self.freqs.index(i1), self.freqs.index(i2)))
-			
-			print('EE-bin index {0:d} is freqs {1:d}x{2:d}'.format(i, i1, i2))
 		
 		for j in range(len(saccfile.get_tracer_combinations('cl_0e'))):
 			te1, te2 = saccfile.get_tracer_combinations('cl_0e')[j]
@@ -163,15 +159,6 @@ class Likelihood:
 				i1, i2 = i2, i1
 			
 			self.crosste.append((self.freqs.index(i1), self.freqs.index(i2)))
-			
-			print('TE-bin index {0:d} is freqs {1:d}x{2:d}'.format(j, i1, i2))
-		
-		self.nbintt = [ x for x, _ in sorted(zip(self.nbintt, self.crosstt), key = lambda v: v[1])]
-		self.nbinte = [ x for x, _ in sorted(zip(self.nbinte, self.crosste), key = lambda v: v[1])]
-		self.nbinee = [ x for x, _ in sorted(zip(self.nbinee, self.crossee), key = lambda v: v[1])]
-		self.crosstt = sorted(self.crosstt)
-		self.crosste = sorted(self.crosste)
-		self.crossee = sorted(self.crossee)
 		
 		if self.nspectt != ntt or self.nspecte != nte or self.nspecee != ntt:
 			raise ValueError('Incorrect number of spectra found: expected {}+{}+{} but found {}+{}+{} (TT+TE+EE).'.format(ntt, nte, ntt, self.nspectt, self.nspecte, self.nspecee))
@@ -183,19 +170,18 @@ class Likelihood:
 		self.win_ells = win_func.weight.T @ win_func.values
 		
 		# We prepare our covariance matrix and window function
-		w_ind = np.zeros((self.nbin,), dtype = int)
 		self.covmat = np.zeros((self.nbin, self.nbin))
 		self.b_dat = np.zeros((self.nbin))
 		self.b_ell = np.zeros((self.nbin))
 		self.win_func = np.zeros((self.nbin, self.shape))
 		
-		# now we jump along the diagonal of the covmat and include matrix blocks from the read-in covmat.
+		# We keep track of which index goes where to properly stack the covariance matrix.
+		w_ind = np.zeros((self.nbin,), dtype = int)
+		
+		# We now add in all the 
 		for j, (x1, x2) in enumerate(self.crosstt):
 			f1 = self.freqs[x1]
 			f2 = self.freqs[x2]
-			# We can check whether F1xF2 should be included in the covmat (note F1xF2 should not be in the covmat if F2xF1 is already in there and F1 != F2)
-			# by checking whether the index is in the lower triangle of a matrix (i.e. we exclude the upper triangle).
-			print('TT-cov block {0:d} is freqs {1:d}x{2:d}'.format(j, f1, f2))
 			eltt, cltt, covtt, ind_tt = saccfile.get_ell_cl('cl_00', '{}_{}_s0'.format(xp_name, f1), '{}_{}_s0'.format(xp_name, f2), return_cov = True, return_ind = True)
 			win_tt = saccfile.get_bandpower_windows(ind_tt)
 			
@@ -203,14 +189,12 @@ class Likelihood:
 			self.b_dat[n0:n0+self.nbintt[j]] = cltt
 			self.b_ell[n0:n0+self.nbintt[j]] = eltt
 			w_ind[n0:n0+self.nbintt[j]] = ind_tt
-			#self.covmat[n0:n0+self.nbintt[j],n0:n0+self.nbintt[j]] = covtt[:,:]
 			self.win_func[n0:n0+self.nbintt[j],:] = win_tt.weight[:,:].T
 		
 		for j, (x1, x2) in enumerate(self.crossee):
 			f1 = self.freqs[x1]
 			f2 = self.freqs[x2]
 			
-			print('EE-cov block {0:d} is freqs {1:d}x{2:d}'.format(j, f1, f2))
 			elee, clee, covee, ind_ee = saccfile.get_ell_cl('cl_ee', '{}_{}_s2'.format(xp_name, f1), '{}_{}_s2'.format(xp_name, f2), return_cov = True, return_ind = True)
 			win_ee = saccfile.get_bandpower_windows(ind_ee)
 			
@@ -218,14 +202,13 @@ class Likelihood:
 			self.b_dat[n0:n0+self.nbinee[j]] = clee
 			self.b_ell[n0:n0+self.nbinee[j]] = elee
 			w_ind[n0:n0+self.nbinee[j]] = ind_ee
-			#self.covmat[n0:n0+self.nbinee[j],n0:n0+self.nbinee[j]] = covee[:,:]
 			self.win_func[n0:n0+self.nbinee[j],:] = win_ee.weight[:,:].T
 		
 		for i, (x1, x2) in enumerate(self.crosste):
 			f1 = self.freqs[x1]
 			f2 = self.freqs[x2]
-			# TE can be done in all cases, because F1xF2 != F2xF1
 			n0 = sum(self.nbintt) + sum(self.nbinte[0:i])
+			
 			elte, clte, covte, ind_te = saccfile.get_ell_cl('cl_0e', '{}_{}_s0'.format(xp_name, f1), '{}_{}_s2'.format(xp_name, f2), return_cov = True, return_ind = True)
 			
 			if covte.shape == (0,0):
@@ -233,16 +216,14 @@ class Likelihood:
 				# Remember that we force the sort the other way around (see above when we loaded in the spectra frequencies).
 				elte, clte, covte, ind_te = saccfile.get_ell_cl('cl_0e', '{}_{}_s2'.format(xp_name, f2), '{}_{}_s0'.format(xp_name, f1), return_cov = True, return_ind = True)
 			
-			print('TE-cov block {0:d} is freqs {1:d}x{2:d}'.format(i, f1, f2))
 			win_te = saccfile.get_bandpower_windows(ind_te)
 			self.b_dat[n0:n0+self.nbinte[i]] = clte
 			self.b_ell[n0:n0+self.nbinte[i]] = elte
 			w_ind[n0:n0+self.nbinte[j]] = ind_te
-			#self.covmat[n0:n0+self.nbinte[i],n0:n0+self.nbinte[i]] = covte[:,:]
 			self.win_func[n0:n0+self.nbinte[i],:] = win_te.weight[:,:].T
 		
-		for i, n in enumerate(w_ind):
-			self.covmat[i,:] = saccfile.covariance.covmat[n,w_ind]
+		# We now make sure to properly index the saccfile's covariance matrix into the one we need.
+		self.covmat[:,:] = saccfile.covariance.covmat[w_ind,:][:,w_ind]
 		
 		self.cull_covmat()
 	
