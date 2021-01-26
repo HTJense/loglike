@@ -20,6 +20,11 @@ class Likelihood:
 		self.nbinte = []
 		self.nbinee = []
 		
+		# Which frequencies are crossed per spectrum
+		self.crosstt = []
+		self.crosste = []
+		self.crossee = []
+		
 		self.freqs = [ 95, 150 ]
 		
 		# maximum ell for windows and for cross spectra
@@ -31,9 +36,8 @@ class Likelihood:
 		self.b1 = 0
 		self.b2 = 0
 		
-		# calibration terms
-		self.ct1 = 1.0
-		self.ct2 = 1.0
+		# calibration parameters
+		self.ct = [ 1.0 for _ in self.freqs ]
 		
 		# leakage terms
 		self.a1 = 0.0
@@ -46,21 +50,33 @@ class Likelihood:
 		self.enable_te = True
 		self.enable_ee = True
 	
-	def set_bins(self, bintt, binte, binee, nfreq = 1):
+	def set_bins(self, bintt, binte, binee):
+		# Set the bin lengths for TT/TE/EE. You can give integers and the class will use the preset array self.freqs to determine the amount of cross-spectra.
 		if type(bintt) == list:
 			self.nbintt = bintt
 		else:
-			self.nbintt = [ int(bintt) for _ in range(nfreq * (nfreq + 1) // 2) ]
+			self.nbintt = [ int(bintt) for _ in range(len(self.freqs) * (len(self.freqs) + 1) // 2) ]
 		
 		if type(binee) == list:
 			self.nbinee = binee
 		else:
-			self.nbinee = [ int(binee) for _ in range(nfreq * (nfreq + 1) // 2) ]
+			self.nbinee = [ int(binee) for _ in range(len(self.freqs) * (len(self.freqs) + 1) // 2) ]
 		
 		if type(binte) == list:
 			self.nbinte = binte
 		else:
-			self.nbinte = [ int(binte) for _ in range(nfreq * nfreq) ]
+			self.nbinte = [ int(binte) for _ in range(len(self.freqs) * len(self.freqs)) ]
+		
+		self.crosstt = []
+		self.crosste = []
+		self.crossee = []
+		
+		for i in range(len(self.freqs)):
+			for j in range(len(self.freqs)):
+				if j >= i:
+					self.crosstt.append((i,j))
+					self.crossee.append((i,j))
+				self.crosste.append((i,j))
 	
 	def load_plaintext(self, spec_filename, cov_filename, bbl_filename, data_dir = ''):
 		if self.nbin == 0:
@@ -92,28 +108,70 @@ class Likelihood:
 		
 		# Check if the numbers add up, we expect N(N+1)/2 for TT/EE and N^2 for TE.
 		n = int(np.sqrt(len(saccfile.get_tracer_combinations('cl_0e'))))
-		ntt = int(n * (n + 1) / 2)
-		nte = int(n * n)
+		ntt = n * (n + 1) // 2
+		nte = n * n
 		
 		# List all used frequencies.
 		# casting a list to a set back to a list to filter out only unique values.
-		self.freqs = sorted(list(set([ int(re.search('{}_([0-9]+)_'.format(xp_name), x).groups()[0]) for x,_ in saccfile.get_tracer_combinations('cl_00') ])))
+		matcher = re.compile('{}_([0-9]+)_([02s]+)'.format(xp_name))
+		
+		self.freqs = sorted(list(set([ int(matcher.search(x).groups()[0]) for x,_ in saccfile.get_tracer_combinations('cl_00') ])))
+		self.ct = [ 1.0 for _ in self.freqs ]
 		
 		self.nbintt = []
-		self.nbinee = []
 		self.nbinte = []
+		self.nbinee = []
+		
+		self.crosstt = []
+		self.crosste = []
+		self.crossee = []
 		
 		# We check how large our window function + covmat should be
-		for i in range(ntt):
-			_, tmp_cells = saccfile.get_ell_cl('cl_00', *saccfile.get_tracer_combinations('cl_00')[i], return_cov = False)
+		for i in range(len(saccfile.get_tracer_combinations('cl_00'))):
+			tt1, tt2 = saccfile.get_tracer_combinations('cl_00')[i]
+			_, tmp_cells = saccfile.get_ell_cl('cl_00', tt1, tt2, return_cov = False)
 			self.nbintt.append(tmp_cells.shape[0])
 			
-			_, tmp_cells = saccfile.get_ell_cl('cl_ee', *saccfile.get_tracer_combinations('cl_ee')[i], return_cov = False)
-			self.nbinee.append(tmp_cells.shape[0])
+			i1 = int(matcher.search(tt1).groups()[0])
+			i2 = int(matcher.search(tt2).groups()[0])
+			self.crosstt.append((self.freqs.index(i1), self.freqs.index(i2)))
+			
+			print('TT-bin index {0:d} is freqs {1:d}x{2:d}'.format(i, i1, i2))
 		
-		for j in range(nte):
-			_, tmp_cells = saccfile.get_ell_cl('cl_0e', *saccfile.get_tracer_combinations('cl_0e')[j], return_cov = False)
+		for i in range(len(saccfile.get_tracer_combinations('cl_ee'))):
+			ee1, ee2 = saccfile.get_tracer_combinations('cl_ee')[i]
+			_, tmp_cells = saccfile.get_ell_cl('cl_ee', ee1, ee2, return_cov = False)
+			self.nbinee.append(tmp_cells.shape[0])
+			
+			i1 = int(matcher.search(ee1).groups()[0])
+			i2 = int(matcher.search(ee2).groups()[0])
+			self.crossee.append((self.freqs.index(i1), self.freqs.index(i2)))
+			
+			print('EE-bin index {0:d} is freqs {1:d}x{2:d}'.format(i, i1, i2))
+		
+		for j in range(len(saccfile.get_tracer_combinations('cl_0e'))):
+			te1, te2 = saccfile.get_tracer_combinations('cl_0e')[j]
+			_, tmp_cells = saccfile.get_ell_cl('cl_0e', te1, te2, return_cov = False)
 			self.nbinte.append(tmp_cells.shape[0])
+			
+			i1 = int(matcher.search(te1).groups()[0])
+			i2 = int(matcher.search(te2).groups()[0])
+			
+			# Dirty: TE/ET ordering matters, so we need to check in what order the sacc-file gives the tracers to us.
+			# The code *asserts* that every spectrum is in TE-ordering, so if we find an ET-ordered band, we cheat and swap the frequencies here.
+			if matcher.search(te1).groups()[1] == 's2':
+				i1, i2 = i2, i1
+			
+			self.crosste.append((self.freqs.index(i1), self.freqs.index(i2)))
+			
+			print('TE-bin index {0:d} is freqs {1:d}x{2:d}'.format(j, i1, i2))
+		
+		self.nbintt = [ x for x, _ in sorted(zip(self.nbintt, self.crosstt), key = lambda v: v[1])]
+		self.nbinte = [ x for x, _ in sorted(zip(self.nbinte, self.crosste), key = lambda v: v[1])]
+		self.nbinee = [ x for x, _ in sorted(zip(self.nbinee, self.crossee), key = lambda v: v[1])]
+		self.crosstt = sorted(self.crosstt)
+		self.crosste = sorted(self.crosste)
+		self.crossee = sorted(self.crossee)
 		
 		if self.nspectt != ntt or self.nspecte != nte or self.nspecee != ntt:
 			raise ValueError('Incorrect number of spectra found: expected {}+{}+{} but found {}+{}+{} (TT+TE+EE).'.format(ntt, nte, ntt, self.nspectt, self.nspecte, self.nspecee))
@@ -125,51 +183,66 @@ class Likelihood:
 		self.win_ells = win_func.weight.T @ win_func.values
 		
 		# We prepare our covariance matrix and window function
+		w_ind = np.zeros((self.nbin,), dtype = int)
 		self.covmat = np.zeros((self.nbin, self.nbin))
 		self.b_dat = np.zeros((self.nbin))
 		self.b_ell = np.zeros((self.nbin))
 		self.win_func = np.zeros((self.nbin, self.shape))
 		
 		# now we jump along the diagonal of the covmat and include matrix blocks from the read-in covmat.
-		j = 0
-		for i, (f1, f2) in enumerate(itertools.product(self.freqs, self.freqs)):
-			idx = (i % len(self.freqs), i // len(self.freqs))
+		for j, (x1, x2) in enumerate(self.crosstt):
+			f1 = self.freqs[x1]
+			f2 = self.freqs[x2]
 			# We can check whether F1xF2 should be included in the covmat (note F1xF2 should not be in the covmat if F2xF1 is already in there and F1 != F2)
 			# by checking whether the index is in the lower triangle of a matrix (i.e. we exclude the upper triangle).
-			if idx in zip(*np.tril_indices(len(self.freqs))):
-				eltt, cltt, covtt, ind_tt = saccfile.get_ell_cl('cl_00', '{}_{}_s0'.format(xp_name, f1), '{}_{}_s0'.format(xp_name, f2), return_cov = True, return_ind = True)
-				win_tt = saccfile.get_bandpower_windows(ind_tt)
-				
-				n0 = sum(self.nbintt[0:j])
-				self.b_dat[n0:n0+self.nbintt[j]] = cltt
-				self.b_ell[n0:n0+self.nbintt[j]] = eltt
-				self.covmat[n0:n0+self.nbintt[j],n0:n0+self.nbintt[j]] = covtt[:,:]
-				self.win_func[n0:n0+self.nbintt[j],:] = win_tt.weight[:,:].T
-				
-				elee, clee, covee, ind_ee = saccfile.get_ell_cl('cl_ee', '{}_{}_s2'.format(xp_name, f1), '{}_{}_s2'.format(xp_name, f2), return_cov = True, return_ind = True)
-				win_ee = saccfile.get_bandpower_windows(ind_ee)
-				
-				n0 = sum(self.nbintt) + sum(self.nbinte) + sum(self.nbinee[0:j])
-				self.b_dat[n0:n0+self.nbinee[j]] = clee
-				self.b_ell[n0:n0+self.nbinee[j]] = elee
-				self.covmat[n0:n0+self.nbinee[j],n0:n0+self.nbinee[j]] = covee[:,:]
-				self.win_func[n0:n0+self.nbinee[j],:] = win_ee.weight[:,:].T
-				
-				j += 1
+			print('TT-cov block {0:d} is freqs {1:d}x{2:d}'.format(j, f1, f2))
+			eltt, cltt, covtt, ind_tt = saccfile.get_ell_cl('cl_00', '{}_{}_s0'.format(xp_name, f1), '{}_{}_s0'.format(xp_name, f2), return_cov = True, return_ind = True)
+			win_tt = saccfile.get_bandpower_windows(ind_tt)
 			
+			n0 = sum(self.nbintt[0:j])
+			self.b_dat[n0:n0+self.nbintt[j]] = cltt
+			self.b_ell[n0:n0+self.nbintt[j]] = eltt
+			w_ind[n0:n0+self.nbintt[j]] = ind_tt
+			#self.covmat[n0:n0+self.nbintt[j],n0:n0+self.nbintt[j]] = covtt[:,:]
+			self.win_func[n0:n0+self.nbintt[j],:] = win_tt.weight[:,:].T
+		
+		for j, (x1, x2) in enumerate(self.crossee):
+			f1 = self.freqs[x1]
+			f2 = self.freqs[x2]
+			
+			print('EE-cov block {0:d} is freqs {1:d}x{2:d}'.format(j, f1, f2))
+			elee, clee, covee, ind_ee = saccfile.get_ell_cl('cl_ee', '{}_{}_s2'.format(xp_name, f1), '{}_{}_s2'.format(xp_name, f2), return_cov = True, return_ind = True)
+			win_ee = saccfile.get_bandpower_windows(ind_ee)
+			
+			n0 = sum(self.nbintt) + sum(self.nbinte) + sum(self.nbinee[0:j])
+			self.b_dat[n0:n0+self.nbinee[j]] = clee
+			self.b_ell[n0:n0+self.nbinee[j]] = elee
+			w_ind[n0:n0+self.nbinee[j]] = ind_ee
+			#self.covmat[n0:n0+self.nbinee[j],n0:n0+self.nbinee[j]] = covee[:,:]
+			self.win_func[n0:n0+self.nbinee[j],:] = win_ee.weight[:,:].T
+		
+		for i, (x1, x2) in enumerate(self.crosste):
+			f1 = self.freqs[x1]
+			f2 = self.freqs[x2]
 			# TE can be done in all cases, because F1xF2 != F2xF1
 			n0 = sum(self.nbintt) + sum(self.nbinte[0:i])
 			elte, clte, covte, ind_te = saccfile.get_ell_cl('cl_0e', '{}_{}_s0'.format(xp_name, f1), '{}_{}_s2'.format(xp_name, f2), return_cov = True, return_ind = True)
 			
 			if covte.shape == (0,0):
 				# Sometimes the tracers are in the other order (they always store them such that F1 < F2), so we gotta reverse the order
+				# Remember that we force the sort the other way around (see above when we loaded in the spectra frequencies).
 				elte, clte, covte, ind_te = saccfile.get_ell_cl('cl_0e', '{}_{}_s2'.format(xp_name, f2), '{}_{}_s0'.format(xp_name, f1), return_cov = True, return_ind = True)
 			
+			print('TE-cov block {0:d} is freqs {1:d}x{2:d}'.format(i, f1, f2))
 			win_te = saccfile.get_bandpower_windows(ind_te)
 			self.b_dat[n0:n0+self.nbinte[i]] = clte
 			self.b_ell[n0:n0+self.nbinte[i]] = elte
-			self.covmat[n0:n0+self.nbinte[i],n0:n0+self.nbinte[i]] = covte[:,:]
+			w_ind[n0:n0+self.nbinte[j]] = ind_te
+			#self.covmat[n0:n0+self.nbinte[i],n0:n0+self.nbinte[i]] = covte[:,:]
 			self.win_func[n0:n0+self.nbinte[i],:] = win_te.weight[:,:].T
+		
+		for i, n in enumerate(w_ind):
+			self.covmat[i,:] = saccfile.covariance.covmat[n,w_ind]
 		
 		self.cull_covmat()
 	
@@ -239,7 +312,7 @@ class Likelihood:
 				self.covmat[:self.nbin,i+sum(self.nbinee[0:j])] = 0.0
 				self.covmat[i+sum(self.nbinee[0:j]),i+sum(self.nbinee[0:j])] = 1e10
 	
-	def loglike(self, fg_tt = None, fg_te = None, fg_ee = None, yp1 = 1.0, yp2 = 1.0):
+	def loglike(self, fg_tt = None, fg_te = None, fg_ee = None, yp = None):
 		if fg_tt is None and self.enable_tt:
 			raise ValueError('TT foreground is expected but not given.')
 		if fg_te is None and self.enable_te:
@@ -314,20 +387,29 @@ class Likelihood:
 		# TODO: Calibration for nfreq > 2.
 		# I.e. have the user pass on a calibration matrix or something and index it.
 		# It suffers from the same problem as the leakage, meaning it is hardcoded and doesn't allow for more than 2 freq cross-spectra.
-		x_model[ sum(self.nbintt[0:0]) : sum(self.nbintt[0:1]) ] = x_model[ sum(self.nbintt[0:0]) : sum(self.nbintt[0:1]) ] * self.ct1 * self.ct1
-		x_model[ sum(self.nbintt[0:1]) : sum(self.nbintt[0:2]) ] = x_model[ sum(self.nbintt[0:1]) : sum(self.nbintt[0:2]) ] * self.ct1 * self.ct2
-		x_model[ sum(self.nbintt[0:2]) : sum(self.nbintt[0:3]) ] = x_model[ sum(self.nbintt[0:2]) : sum(self.nbintt[0:3]) ] * self.ct2 * self.ct2
-		
-		i0 = sum(self.nbintt)
-		x_model[ i0 + sum(self.nbinte[0:0]) : i0 + sum(self.nbinte[0:1]) ] = x_model[ i0 + sum(self.nbinte[0:0]) : i0 + sum(self.nbinte[0:1]) ] * self.ct1 * self.ct1 * yp1
-		x_model[ i0 + sum(self.nbinte[0:1]) : i0 + sum(self.nbinte[0:2]) ] = x_model[ i0 + sum(self.nbinte[0:1]) : i0 + sum(self.nbinte[0:2]) ] * self.ct1 * self.ct2 * yp2
-		x_model[ i0 + sum(self.nbinte[0:2]) : i0 + sum(self.nbinte[0:3]) ] = x_model[ i0 + sum(self.nbinte[0:2]) : i0 + sum(self.nbinte[0:3]) ] * self.ct2 * self.ct1 * yp1
-		x_model[ i0 + sum(self.nbinte[0:3]) : i0 + sum(self.nbinte[0:4]) ] = x_model[ i0 + sum(self.nbinte[0:3]) : i0 + sum(self.nbinte[0:4]) ] * self.ct2 * self.ct2 * yp2
-		
-		i0 = sum(self.nbintt) + sum(self.nbinte)
-		x_model[ i0 + sum(self.nbinee[0:0]) : i0 + sum(self.nbinee[0:1]) ] = x_model[ i0 + sum(self.nbinee[0:0]) : i0 + sum(self.nbinee[0:1]) ] * self.ct1 * self.ct1 * yp1 * yp1
-		x_model[ i0 + sum(self.nbinee[0:1]) : i0 + sum(self.nbinee[0:2]) ] = x_model[ i0 + sum(self.nbinee[0:1]) : i0 + sum(self.nbinee[0:2]) ] * self.ct1 * self.ct2 * yp1 * yp2
-		x_model[ i0 + sum(self.nbinee[0:2]) : i0 + sum(self.nbinee[0:3]) ] = x_model[ i0 + sum(self.nbinee[0:2]) : i0 + sum(self.nbinee[0:3]) ] * self.ct2 * self.ct2 * yp2 * yp2
+		if not (yp is None or self.ct is None):
+			if yp is None:
+				yp = np.ones((len(self.freqs),))
+			else:
+				if len(yp) != len(self.freqs):
+					raise IndexError('Polarization gain should be given for each frequency!')
+			
+			for i in np.arange(len(self.nbintt)):
+				# Mode T[i]xT[j] should be calibrated using CT[i] * CT[j]
+				m1, m2 = self.crosstt[i]
+				x_model[ sum(self.nbintt[0:i]) : sum(self.nbintt[0:i+1]) ] = x_model[ sum(self.nbintt[0:i]) : sum(self.nbintt[0:i+1]) ] * self.ct[m1] * self.ct[m2]
+			
+			for i in np.arange(len(self.nbinte)):
+				# Mode T[i]xE[j] should be calibrated using CT[i] * (CT[j]*YP[j])
+				m1, m2 = self.crosste[i]
+				i0 = sum(self.nbintt)
+				x_model[ i0 + sum(self.nbinte[0:i]) : i0 + sum(self.nbinte[0:i+1]) ] = x_model[ i0 + sum(self.nbinte[0:i]) : i0 + sum(self.nbinte[0:i+1]) ] * self.ct[m1] * self.ct[m2] * yp[m2]
+			
+			for i in np.arange(len(self.nbinee)):
+				# Mode E[i]xE[j] should be calibrated using (CT[i]*YP[i]) * (CT[j]*YP[j])
+				m1, m2 = self.crossee[i]
+				i0 = sum(self.nbintt) + sum(self.nbinte)
+				x_model[ i0 + sum(self.nbinee[0:i]) : i0 + sum(self.nbinee[0:i+1]) ] = x_model[ i0 + sum(self.nbinee[0:i]) : i0 + sum(self.nbinee[0:i+1]) ] * self.ct[m1] * yp[m1] * self.ct[m2] * yp[m2]
 		
 		subcov = self.covmat
 		bin_no = self.nbin
@@ -363,10 +445,6 @@ class Likelihood:
 	def disable_leakage(self):
 		self.a1 = 0.0
 		self.a2 = 0.0
-	
-	def disable_calibration(self):
-		self.ct1 = 0.0
-		self.ct2 = 0.0
 	
 	@property
 	def use_tt(self):
