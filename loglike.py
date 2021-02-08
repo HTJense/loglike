@@ -89,53 +89,85 @@ class Likelihood:
 		self.enable_te = True
 		self.enable_ee = True
 	
-	def set_bins(self, bintt, binte, binee):
-		# Set the bin lengths for TT/TE/EE. You can give integers and the class will use the preset array self.freqs to determine the amount of cross-spectra.
-		if type(bintt) == list:
-			self.nbintt = bintt
-		else:
-			self.crosstt = []
-			self.nbintt = [ int(bintt) for _ in range(len(self.freqs) * (len(self.freqs) + 1) // 2) ]
-			
-			for i in range(len(self.freqs)):
-				for j in range(len(self.freqs)):
-					if j >= i:
-						self.crosstt.append((i,j))
-		
-		if type(binee) == list:
-			self.nbinee = binee
-		else:
-			self.crossee = []
-			self.nbinee = [ int(binee) for _ in range(len(self.freqs) * (len(self.freqs) + 1) // 2) ]
-			
-			for i in range(len(self.freqs)):
-				for j in range(len(self.freqs)):
-					if j >= i:
-						self.crossee.append((i,j))
-		
-		if type(binte) == list:
-			self.nbinte = binte
-		else:
-			self.crosste = []
-			self.nbinte = [ int(binte) for _ in range(len(self.freqs) * len(self.freqs)) ]
-			
-			for i in range(len(self.freqs)):
-				for j in range(len(self.freqs)):
-					self.crossee.append((i,j))
-	
-	def load_plaintext(self, spec_filename, cov_filename, bbl_filename, data_dir = ''):
+	def load_plaintext(self, spec_filename, cov_filename, bbl_filename, bins, cross, lmax_win = None, data_dir = ''):
 		if self.nbin == 0:
-			raise ValueError('You did not set any spectra bin sizes beforehand!')
-		
-		self.win_func = np.loadtxt(data_dir + bbl_filename)[:self.nbin,:self.lmax_win]
-		self.b_dat = np.loadtxt(data_dir + spec_filename)[:self.nbin]
-		
-		self.covmat = np.loadtxt(data_dir + cov_filename, dtype = float)[:self.nbin,:self.nbin] #.reshape((self.nbin, self.nbin))
-		for i in range(self.nbin):
-			for j in range(i, self.nbin):
-				self.covmat[i,j] = self.covmat[j,i]
-
-		self.cull_covmat()
+			# We don't yet have a model loaded in, so we can just take all given data.
+			self.nbintt = bins[0]
+			self.nbinte = bins[1]
+			self.nbinee = bins[2]
+			
+			self.crosstt = cross[0]
+			self.crosste = cross[1]
+			self.crossee = cross[2]
+			
+			if not lmax_win is None:
+				self.lmax_win = lmax_win
+			
+			self.win_func = np.loadtxt(data_dir + bbl_filename)[:self.nbin,:self.lmax_win]
+			self.b_dat = np.loadtxt(data_dir + spec_filename)[:self.nbin]
+			
+			self.covmat = np.loadtxt(data_dir + cov_filename, dtype = float)[:self.nbin,:self.nbin]
+		else:
+			# We need to insert this data into the existing data
+			if lmax_win is None:
+				lmax_win = self.lmax_win
+			 
+			newbin = [ sum(bins[i]) for i in range(len(bins)) ]
+			new_win = np.loadtxt(data_dir + bbl_filename)[:sum(newbin), :lmax_win]
+			
+			if lmax_win < self.lmax_win:
+				# The existing data extends to higher ell than the provided data,
+				# thus we pad the provided data with zeros.
+				result = np.zeros((sum(newbin), self.lmax_win))
+				result[:,:lmax_win] = new_win
+				new_win = result
+			elif lmax_win > self.lmax_win:
+				# The provided data extends to higher ell than the existing data,
+				# thus we pad the existing data with zeros.
+				result = np.zeros((self.nbin, lmax_win))
+				result[:,:self.lmax_win] = self.win_func
+				self.win_func = result
+				self.lmax_win = lmax_win
+			
+			# We now know for sure that both window arrays have the same number of ell bins (i.e. their ndim[1] is equal).
+			# Now we can zip them together.
+			
+			# First we need to split either window function into separate TT/TE/EE components.
+			old_tt, old_te, old_ee = self.win_func[:sum(self.nbintt),:], self.win_func[sum(self.nbintt):sum(self.nbintt) + sum(self.nbinte),:], self.win_func[sum(self.nbintt)+sum(self.nbinte):sum(self.nbintt)+sum(self.nbinte)+sum(self.nbinee),:]
+			new_tt, new_te, new_ee = new_win[:newbin[0],:], new_win[newbin[0]:newbin[0]+newbin[1],:], new_win[newbin[0]+newbin[1]:newbin[0]+newbin[1]+newbin[2],:]
+			# And we then stack them in the correct order and merge
+			self.win_func = np.concatenate((old_tt, new_tt, old_te, new_te, old_ee, new_ee), axis = 0)
+			
+			# Now we do the same for the covariance matrix.
+			cov2 = np.loadtxt(data_dir + cov_filename, dtype = float)[:sum(newbin),:sum(newbin)]
+			oldbin = [ sum(self.nbintt), sum(self.nbinte), sum(self.nbinee) ]
+			
+			ncov = np.zeros((sum(oldbin)+sum(newbin), sum(oldbin)+sum(newbin)))
+			
+			# This is some "clever" interlacing of the two covariance matrices.
+			for i in range(3):
+				for j in range(3):
+					ncov[ sum(oldbin[:i  ]) + sum(newbin[:i]) : sum(oldbin[:i+1]) + sum(newbin[:i  ]), sum(oldbin[:j  ]) + sum(newbin[:j]) : sum(oldbin[:j+1]) + sum(newbin[:j  ]) ] = self.covmat[ sum(oldbin[:i]) : sum(oldbin[:i+1]), sum(oldbin[:j]) : sum(oldbin[:j+1]) ]
+					ncov[ sum(oldbin[:i+1]) + sum(newbin[:i]) : sum(oldbin[:i+1]) + sum(newbin[:i+1]), sum(oldbin[:j+1]) + sum(newbin[:j]) : sum(oldbin[:j+1]) + sum(newbin[:j+1]) ] =        cov2[ sum(newbin[:i]) : sum(newbin[:i+1]), sum(newbin[:j]) : sum(newbin[:j+1]) ]
+			
+			self.covmat = ncov
+			
+			# And finally for the data vector.
+			n_dat = np.loadtxt(data_dir + spec_filename)[:sum(newbin)]
+			old_tt, old_te, old_ee = self.b_dat[:sum(self.nbintt)], self.b_dat[sum(self.nbintt):sum(self.nbintt)+sum(self.nbinte)], self.b_dat[sum(self.nbintt)+sum(self.nbinte):sum(self.nbintt)+sum(self.nbinte)+sum(self.nbinee)]
+			new_tt, new_te, new_ee = n_dat[:newbin[0]], n_dat[newbin[0]:newbin[0]+newbin[1]], n_dat[newbin[0]+newbin[1]:newbin[0]+newbin[1]+newbin[2]]
+			
+			self.b_dat = np.concatenate((old_tt, new_tt, old_te, new_te, old_ee, new_ee), axis = 0)
+			
+			# Now that all is well, we can add the new bins to the old bins.
+			# The cross indices are first shifted over.
+			self.crosstt += cross[0]
+			self.crosste += cross[1]
+			self.crossee += cross[2]
+			
+			self.nbintt += bins[0]
+			self.nbinte += bins[1]
+			self.nbinee += bins[2]
 	
 	def bins_from_sacc(self, saccfile, xp_name = 'LAT'):
 		# Check if the numbers add up, we expect N(N+1)/2 for TT/EE and N^2 for TE.
