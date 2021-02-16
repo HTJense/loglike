@@ -5,34 +5,41 @@ import itertools
 from scipy import linalg
 from scipy.io import FortranFile
 
-class Likelihood:
+class PlikMFLike:
 	def __init__(self):
-		self.win_func = None
 		self.covmat = None
-		self.cells = None
-		self.b_dat = None
-		self.win_ells = None
-		self.b_ell = None
+		
 		self.ells = None
+		self.cells = None
+		
+		self.b_ell = None
+		self.b_dat = None
+		
+		self.win_ells = None
+		self.win_func = None
+		
+		# Can probably be done more nicely, but I am gonna keep them for now.
+		self.nmin = []
+		self.nmax = []
 		
 		# Total number of bins per cross spectrum
-		self.nbintt = []
-		self.nbinte = []
-		self.nbinee = []
+		self.nbintt = [ ]
+		self.nbinte = [ ]
+		self.nbinee = [ ]
 		
 		# Which frequencies are crossed per spectrum
-		self.crosstt = []
-		self.crosste = []
-		self.crossee = []
+		self.crosstt = [ ]
+		self.crosste = [ ]
+		self.crossee = [ ]
 		
-		self.freqs = [ 95, 150 ]
+		self.freqs = [ 100, 137, 217 ]
 		
 		# maximum ell for windows and for cross spectra
-		self.lmax_win = 7925
-		self.tt_lmax = 6000
+		self.lmax_win = 2508
+		self.tt_lmax = 3000
 		
 		# amount of low-ell bins to ignore per cross spectrum
-		self.b0 = 5
+		self.b0 = 0
 		self.b1 = 0
 		self.b2 = 0
 		
@@ -40,11 +47,8 @@ class Likelihood:
 		self.ct = [ 1.0 for _ in self.freqs ]
 		self.yp = [ 1.0 for _ in self.freqs ]
 		
-		# leakage terms
-		self.a1 = 0.0
-		self.a2 = 0.0
-		self.l98 = None
-		self.l150 = None
+		# systematics
+		self.sys_vec = None
 		
 		# Whether or not to use TT, EE and/or TE (or all)
 		self.enable_tt = True
@@ -52,13 +56,16 @@ class Likelihood:
 		self.enable_ee = True
 	
 	def clear(self):
-		self.win_func = None
 		self.covmat = None
-		self.cells = None
-		self.b_dat = None
-		self.win_ells = None
-		self.b_ell = None
+		
 		self.ells = None
+		self.cells = None
+		
+		self.b_ell = None
+		self.b_dat = None
+		
+		self.win_ells = None
+		self.win_func = None
 		
 		self.nbintt = []
 		self.nbinte = []
@@ -89,7 +96,49 @@ class Likelihood:
 		self.enable_te = True
 		self.enable_ee = True
 	
-	def load_plaintext(self, spec_filename, cov_filename, bbl_filename, bins, cross, lmax_win = None, data_dir = ''):
+	def load_windows_pliklike(self, weightfile, minfile, maxfile, bin_starts, bin_ends, lmin = 0, lmax_win = None, data_dir = ''):
+		# Because of the way the plik files store the window function, I wrote this function to load in the window function into a matrix form.
+		# It's not the nicest code I have ever written, but it does what it needs to do.
+		# For optimal use, call this function once, output the resulting win_func to a text file, and then load that in using load_plaintext every time.
+		if not lmax_win is None: self.lmax_win = lmax_win
+		
+		blmin = np.loadtxt(data_dir + minfile).astype(int) + lmin
+		blmax = np.loadtxt(data_dir + maxfile).astype(int) + lmin
+		bweight = np.concatenate([ np.zeros((lmin)), np.loadtxt(data_dir + weightfile) ])[:self.lmax_win]
+		
+		blens = [ [ b - a + 1 for a, b in zip(x, y) ] for x, y in zip(bin_starts, bin_ends) ]
+		bweight = np.repeat(bweight[np.newaxis,:], max(blens[0]), axis = 0)
+		
+		# Basically, bweight temporarily stores the full window function, and we will take slices from it and put that in the full window function.
+		for i in np.arange(bweight.shape[0]):
+			bweight[i, :blmin[i]] = 0.0
+			bweight[i, blmax[i]:] = 0.0
+		
+		xmin = []
+		xmax = []
+		for a, b in zip(bin_starts, bin_ends):
+			xmin += a
+			xmax += b
+		
+		xmin = np.array(xmin) - 1
+		xmax = np.array(xmax)
+		xlen = xmax - xmin
+		
+		self.win_func = np.zeros((sum([ sum(x) for x in blens ]), self.shape))
+		
+		for i in np.arange(len(xmin)):
+			xstart = np.sum(xlen[0:i])
+			xend = xstart + xlen[i]
+			
+			self.win_func[xstart:xend, :] = bweight[xmin[i]:xmax[i],2:]
+		
+		del bweight
+		
+		self.nmin = bin_starts
+		self.nmax = bin_ends
+		self.b_ell = self.win_func @ np.arange(2, self.lmax_win)
+	
+	def load_plaintext(self, spec_filename = '', cov_filename = '', bbl_filename = '', bins = [], cross = [], lmax_win = None, data_dir = ''):
 		if self.nbin == 0:
 			# We don't yet have a model loaded in, so we can just take all given data.
 			self.nbintt = bins[0]
@@ -103,10 +152,9 @@ class Likelihood:
 			if not lmax_win is None:
 				self.lmax_win = lmax_win
 			
-			self.win_func = np.loadtxt(data_dir + bbl_filename)[:self.nbin,:self.lmax_win]
-			self.b_dat = np.loadtxt(data_dir + spec_filename)[:self.nbin]
-			
-			self.covmat = np.loadtxt(data_dir + cov_filename, dtype = float)[:self.nbin,:self.nbin]
+			if not bbl_filename == '': self.win_func = np.loadtxt(data_dir + bbl_filename)[:self.nbin,:self.shape]
+			if not spec_filename == '': self.b_dat = np.loadtxt(data_dir + spec_filename)[:self.nbin]
+			if not cov_filename == '': self.covmat = np.loadtxt(data_dir + cov_filename, dtype = float)[:self.nbin,:self.nbin]
 		else:
 			# We need to insert this data into the existing data
 			if lmax_win is None:
@@ -340,14 +388,36 @@ class Likelihood:
 		
 		self.ells = np.arange(2, self.input_shape+2)
 	
-	def load_leakage(self, leak_filename, data_dir = ''):
-		# Note: this assumes all TE bins are the same length (it is hardcoded at a later point).
-		_, self.l98, self.l150 = np.loadtxt(data_dir + leak_filename, unpack = True)
-		self.l98 = self.l98[ :self.nbinte[0] ]
-		self.l150 = self.l150[ :self.nbinte[0] ]
+	def load_systematics(self, leak_filename, corr_filename, subpix_filename, data_dir = ''):
+		leakage = np.loadtxt(data_dir + leak_filename)[:self.shape,1:]
+		corr = np.loadtxt(data_dir + corr_filename)[:self.shape,1:]
+		subpix = np.loadtxt(data_dir + subpix_filename)[:self.shape,1:]
 		
-		self.a1 = 1.0
-		self.a2 = 1.0
+		sys_vec = self.win_func @ (leakage + corr + subpix)
+		
+		self.sys_vec = np.zeros((self.win_func.shape[0]))
+		
+		k = 0
+		for j, tt in enumerate(self.nbintt):
+			self.sys_vec[k:k+tt] = sys_vec[k:k+tt,j]
+			k += tt
+		
+		# The sys vector is sorted TT-TE-EE, but it should be sorted TT-EE-TE, so we swap ordering here a bit.
+		k = 0
+		k0 = sum(self.nbintt)
+		k1 = sum(self.nbintt) + sum(self.nbinte)
+		j1 = len(self.nbintt) + len(self.nbinte)
+		for j, ee in enumerate(self.nbinee):
+			self.sys_vec[k+k0:k+k0+ee] = sys_vec[k+k1:k+k1+ee,j+j1]
+			k += ee
+		
+		k = 0
+		k0 = sum(self.nbintt) + sum(self.nbinee)
+		k1 = sum(self.nbintt)
+		j1 = len(self.nbintt)
+		for j, te in enumerate(self.nbinte):
+			self.sys_vec[k+k0:k+k0+te] = sys_vec[k+k1:k+k1+te,j+j1]
+			k += te
 	
 	def cull_covmat(self):
 		# We have now packed the covariance matrix and the window function matrix.
@@ -373,13 +443,17 @@ class Likelihood:
 				self.covmat[:self.nbin,i+sum(self.nbinee[0:j])] = 0.0
 				self.covmat[i+sum(self.nbinee[0:j]),i+sum(self.nbinee[0:j])] = 1e10
 	
-	def loglike(self, fg_tt = None, fg_te = None, fg_ee = None):
+	def get_model(self, fg_tt = None, fg_te = None, fg_ee = None):
 		if fg_tt is None and self.enable_tt:
 			raise ValueError('TT foreground is expected but not given.')
 		if fg_te is None and self.enable_te:
 			raise ValueError('TE foreground is expected but not given.')
 		if fg_ee is None and self.enable_ee:
 			raise ValueError('EE foreground is expected but not given.')
+		
+		# !! NOTE !!
+		# Plik uses TT-EE-TE ordering for some stupid reason!
+		# So we order the vector differently from how ACTPol does it!
 		
 		# Total C-ells.
 		cltt = np.zeros((self.shape))
@@ -394,55 +468,37 @@ class Likelihood:
 		x_theory = np.zeros((self.nspec, self.shape))
 		
 		x_theory[0                         : self.nspectt                          ,:self.shape] = np.tile(cltt, (self.nspectt, 1)) + fg_tt
-		x_theory[self.nspectt              : self.nspectt+self.nspecte             ,:self.shape] = np.tile(clte, (self.nspecte, 1)) + fg_te
-		x_theory[self.nspectt+self.nspecte : self.nspectt+self.nspecte+self.nspecee,:self.shape] = np.tile(clee, (self.nspecee, 1)) + fg_ee
+		x_theory[self.nspectt              : self.nspectt+self.nspecee             ,:self.shape] = np.tile(clee, (self.nspecee, 1)) + fg_ee
+		x_theory[self.nspectt+self.nspecee : self.nspectt+self.nspecee+self.nspecte,:self.shape] = np.tile(clte, (self.nspecte, 1)) + fg_te
 		
-		ll = np.arange(2, self.shape+2)
+		ll = np.arange(self.shape) + 2
 		for i in range(x_theory.shape[0]):
+		#	# C_ell --> D_ell
 			x_theory[i,:] = 2.0 * np.pi * x_theory[i,:] / (ll * (ll + 1.0))
 		
 		x_model = np.zeros((self.nbin))
-		# Bin the model using the window functions
 		
 		# TT modes
 		for j in range(self.nspectt):
 			x_model[sum(self.nbintt[0:j]) : sum(self.nbintt[0:j+1])] = self.win_func[sum(self.nbintt[0:j]) : sum(self.nbintt[0:j+1]), :] @ x_theory[j,:] # TT
 		
-		# TE modes
-		for j in range(self.nspecte):
-			i0 = sum(self.nbintt)
-			j0 = self.nspectt
-			x_model[i0 + sum(self.nbinte[0:j]) : i0 + sum(self.nbinte[0:j+1])] = self.win_func[i0 + sum(self.nbinte[0:j]) : i0 + sum(self.nbinte[0:j+1]), :] @ x_theory[j0+j,:] # TE
-		
 		# EE modes
 		for j in range(self.nspecee):
-			i0 = sum(self.nbintt) + sum(self.nbinte)
-			j0 = self.nspectt + self.nspecte
+			i0 = sum(self.nbintt)
+			j0 = self.nspectt
 			x_model[i0 + sum(self.nbinee[0:j]) : i0 + sum(self.nbinee[0:j+1])] = self.win_func[i0 + sum(self.nbinee[0:j]) : i0 + sum(self.nbinee[0:j+1]), :] @ x_theory[j0+j,:] # EE
 		
-		# Leakage
-		if not self.l98 is None and not self.l150 is None:
-			# TODO: Leakage for nfreq > 2.
-			# Currently it is hardcoded and only allows for 2 freq leakage, but it should be changed to allow for n > 2.
-			
-			# Modify TE spectra by adding scaled TT components.
-			i0 = sum(self.nbintt)
-			x_model[i0 + sum(self.nbinte[0:0]) : i0 + sum(self.nbinte[0:1]) ] += x_model[ sum(self.nbintt[0:0]) : sum(self.nbintt[0:1]) ] * self.a1 * self.l98
-			x_model[i0 + sum(self.nbinte[0:1]) : i0 + sum(self.nbinte[0:2]) ] += x_model[ sum(self.nbintt[0:1]) : sum(self.nbintt[0:2]) ] * self.a2 * self.l150
-			x_model[i0 + sum(self.nbinte[0:2]) : i0 + sum(self.nbinte[0:3]) ] += x_model[ sum(self.nbintt[0:1]) : sum(self.nbintt[0:2]) ] * self.a1 * self.l98
-			x_model[i0 + sum(self.nbinte[0:3]) : i0 + sum(self.nbinte[0:4]) ] += x_model[ sum(self.nbintt[0:2]) : sum(self.nbintt[0:3]) ] * self.a2 * self.l150
-			
-			# Modify EE spectra by adding scaled TT/TE components.
-			j0 = sum(self.nbintt) + sum(self.nbinte)
-			x_model[j0 + sum(self.nbinee[0:0]) : j0 + sum(self.nbinee[0:1]) ] += 2 * x_model[ i0 + sum(self.nbinte[0:0]) : i0 + sum(self.nbinte[0:1]) ] * self.a1 * self.l98
-			x_model[j0 + sum(self.nbinee[0:0]) : j0 + sum(self.nbinee[0:1]) ] +=     x_model[      sum(self.nbintt[0:0]) :      sum(self.nbintt[0:1]) ] * self.a1 * self.l98 * self.a1 * self.l98
-			
-			x_model[j0 + sum(self.nbinee[0:1]) : j0 + sum(self.nbinee[0:2]) ] +=     x_model[ i0 + sum(self.nbinte[0:1]) : i0 + sum(self.nbinte[0:2]) ] * self.a1 * self.l98
-			x_model[j0 + sum(self.nbinee[0:1]) : j0 + sum(self.nbinee[0:2]) ] +=     x_model[ i0 + sum(self.nbinte[0:2]) : i0 + sum(self.nbinte[0:3]) ] * self.a2 * self.l150
-			x_model[j0 + sum(self.nbinee[0:1]) : j0 + sum(self.nbinee[0:2]) ] +=     x_model[      sum(self.nbintt[0:1]) :      sum(self.nbintt[0:2]) ] * self.a1 * self.l98 * self.a2 * self.l150
-			
-			x_model[j0 + sum(self.nbinee[0:2]) : j0 + sum(self.nbinee[0:3]) ] += 2 * x_model[ i0 + sum(self.nbinte[0:3]) : i0 + sum(self.nbinte[0:4]) ] * self.a2 * self.l150
-			x_model[j0 + sum(self.nbinee[0:0]) : j0 + sum(self.nbinee[0:1]) ] +=     x_model[      sum(self.nbintt[0:2]) :      sum(self.nbintt[0:3]) ] * self.a2 * self.l150 * self.a2 * self.l150
+		# TE modes
+		for j in range(self.nspecte):
+			i0 = sum(self.nbintt) + sum(self.nbinee)
+			j0 = self.nspectt + self.nspecee
+			x_model[i0 + sum(self.nbinte[0:j]) : i0 + sum(self.nbinte[0:j+1])] = self.win_func[i0 + sum(self.nbinte[0:j]) : i0 + sum(self.nbinte[0:j+1]), :] @ x_theory[j0+j,:] # TE
+		
+		# The sys vec is pre-binned, so we add it on here
+		# (plik adds it in before binning) but there's this neat maths hack called distributivity that allows us to do this:
+		#    A (x + y) = A x + A y
+		if not self.sys_vec is None:
+			x_model += self.sys_vec
 		
 		# Calibration
 		for i in np.arange(len(self.nbintt)):
@@ -450,17 +506,22 @@ class Likelihood:
 			m1, m2 = self.crosstt[i]
 			x_model[ sum(self.nbintt[0:i]) : sum(self.nbintt[0:i+1]) ] = x_model[ sum(self.nbintt[0:i]) : sum(self.nbintt[0:i+1]) ] * self.ct[m1] * self.ct[m2]
 		
-		for i in np.arange(len(self.nbinte)):
-			# Mode T[i]xE[j] should be calibrated using CT[i] * (CT[j]*YP[j])
-			m1, m2 = self.crosste[i]
-			i0 = sum(self.nbintt)
-			x_model[ i0 + sum(self.nbinte[0:i]) : i0 + sum(self.nbinte[0:i+1]) ] = x_model[ i0 + sum(self.nbinte[0:i]) : i0 + sum(self.nbinte[0:i+1]) ] * self.ct[m1] * (self.ct[m2] * self.yp[m2])
-		
 		for i in np.arange(len(self.nbinee)):
 			# Mode E[i]xE[j] should be calibrated using (CT[i]*YP[i]) * (CT[j]*YP[j])
 			m1, m2 = self.crossee[i]
-			i0 = sum(self.nbintt) + sum(self.nbinte)
+			i0 = sum(self.nbintt)
 			x_model[ i0 + sum(self.nbinee[0:i]) : i0 + sum(self.nbinee[0:i+1]) ] = x_model[ i0 + sum(self.nbinee[0:i]) : i0 + sum(self.nbinee[0:i+1]) ] * (self.ct[m1] * self.yp[m1]) * (self.ct[m2] * self.yp[m2])
+		
+		for i in np.arange(len(self.nbinte)):
+			# Mode T[i]xE[j] should be calibrated using CT[i] * (CT[j]*YP[j])
+			m1, m2 = self.crosste[i]
+			i0 = sum(self.nbintt) + sum(self.nbinee)
+			x_model[ i0 + sum(self.nbinte[0:i]) : i0 + sum(self.nbinte[0:i+1]) ] = x_model[ i0 + sum(self.nbinte[0:i]) : i0 + sum(self.nbinte[0:i+1]) ] * (0.5 * self.ct[m1] * (self.ct[m2] * self.yp[m2]) + 0.5 * (self.ct[m1] * self.yp[m1]) * self.ct[m2])
+		
+		return x_model
+	
+	def loglike(self, fg_tt = None, fg_te = None, fg_ee = None):
+		x_model = self.get_model(fg_tt, fg_te, fg_ee)
 		
 		subcov = self.covmat
 		bin_no = self.nbin
@@ -472,13 +533,13 @@ class Likelihood:
 			subcov = self.covmat[:bin_no,:bin_no]
 			print('Using only TT.')
 		elif not self.enable_tt and self.enable_te and not self.enable_ee:
-			n0 = sum(self.nbintt)
+			n0 = sum(self.nbintt) + sum(self.nbinee)
 			bin_no = sum(self.nbinte)
 			diff_vec = diff_vec[n0:n0 + bin_no]
 			subcov = self.covmat[n0:n0 + bin_no, n0:n0 + bin_no]
 			print('Using only TE.')
 		elif not self.enable_tt and not self.enable_te and self.enable_ee:
-			n0 = sum(self.nbintt) + sum(self.nbinte)
+			n0 = sum(self.nbintt)
 			bin_no = sum(self.nbinee)
 			diff_vec = diff_vec[n0:n0 + bin_no]
 			subcov = self.covmat[n0:n0 + bin_no, n0:n0 + bin_no]
@@ -488,7 +549,8 @@ class Likelihood:
 		else:
 			raise Exception('Improper combination of TT/TE/EE spectra selected.')
 		
-		fisher = linalg.cho_solve(linalg.cho_factor(subcov), b = np.identity(bin_no))
+		# Plik covmat is already inverted.
+		fisher = subcov #linalg.cho_solve(linalg.cho_factor(subcov), b = np.identity(bin_no))
 		
 		tmp = fisher @ diff_vec
 		return -np.dot(tmp, diff_vec) / 2.0
@@ -549,7 +611,7 @@ class Likelihood:
 	
 	@property
 	def shape(self):
-		return self.lmax_win-1
+		return self.lmax_win-2
 	
 	@property
 	def input_shape(self):
