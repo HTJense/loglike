@@ -104,14 +104,14 @@ class PlikMFLike:
 		
 		blmin = np.loadtxt(data_dir + minfile).astype(int) + lmin
 		blmax = np.loadtxt(data_dir + maxfile).astype(int) + lmin
-		bweight = np.concatenate([ np.zeros((lmin)), np.loadtxt(data_dir + weightfile) ])[:self.lmax_win]
+		bweight = np.concatenate([ np.zeros((lmin-1)), np.loadtxt(data_dir + weightfile) ])[:self.lmax_win]
 		
 		blens = [ [ b - a + 1 for a, b in zip(x, y) ] for x, y in zip(bin_starts, bin_ends) ]
 		bweight = np.repeat(bweight[np.newaxis,:], max(blens[0]), axis = 0)
 		
 		# Basically, bweight temporarily stores the full window function, and we will take slices from it and put that in the full window function.
 		for i in np.arange(bweight.shape[0]):
-			bweight[i, :blmin[i]] = 0.0
+			bweight[i, :blmin[i]-1] = 0.0
 			bweight[i, blmax[i]:] = 0.0
 		
 		xmin = []
