@@ -100,11 +100,12 @@ class PlikMFLike:
 		# Because of the way the plik files store the window function, I wrote this function to load in the window function into a matrix form.
 		# It's not the nicest code I have ever written, but it does what it needs to do.
 		# For optimal use, call this function once, output the resulting win_func to a text file, and then load that in using load_plaintext every time.
-		if not lmax_win is None: self.lmax_win = lmax_win
+		if not lmax_win is None:
+			self.lmax_win = lmax_win + lmin
 		
 		blmin = np.loadtxt(data_dir + minfile).astype(int) + lmin
 		blmax = np.loadtxt(data_dir + maxfile).astype(int) + lmin
-		bweight = np.concatenate([ np.zeros((lmin-1)), np.loadtxt(data_dir + weightfile) ])[:self.lmax_win]
+		bweight = np.concatenate([ np.zeros((lmin-1)), np.loadtxt(data_dir + weightfile) ])
 		
 		blens = [ [ b - a + 1 for a, b in zip(x, y) ] for x, y in zip(bin_starts, bin_ends) ]
 		bweight = np.repeat(bweight[np.newaxis,:], max(blens[0]), axis = 0)
@@ -130,7 +131,7 @@ class PlikMFLike:
 			xstart = np.sum(xlen[0:i])
 			xend = xstart + xlen[i]
 			
-			self.win_func[xstart:xend, :] = bweight[xmin[i]:xmax[i],2:]
+			self.win_func[xstart:xend, :] = bweight[xmin[i]:xmax[i],1:self.shape + 1]
 		
 		del bweight
 		
@@ -389,11 +390,15 @@ class PlikMFLike:
 		self.ells = np.arange(2, self.input_shape+2)
 	
 	def load_systematics(self, leak_filename, corr_filename, subpix_filename, data_dir = ''):
-		leakage = np.loadtxt(data_dir + leak_filename)[:self.shape,1:]
-		corr = np.loadtxt(data_dir + corr_filename)[:self.shape,1:]
-		subpix = np.loadtxt(data_dir + subpix_filename)[:self.shape,1:]
+		leakage = np.loadtxt(data_dir + leak_filename)[:,1:]
+		corr = np.loadtxt(data_dir + corr_filename)[:,1:]
+		subpix = np.loadtxt(data_dir + subpix_filename)[:,1:]
 		
-		sys_vec = self.win_func @ (leakage + corr + subpix)
+		sum_vec = (leakage + corr + subpix)
+		sys_vec = np.zeros((self.shape, sum_vec.shape[1]))
+		sys_vec[:sum_vec.shape[0],:] = sum_vec[:,:]
+		
+		sys_vec = self.win_func @ sys_vec
 		
 		self.sys_vec = np.zeros((self.win_func.shape[0]))
 		
